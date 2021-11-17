@@ -1,0 +1,592 @@
+---
+title: Survival analysis of lung cancer patients from the Veterans' Administration
+  Lung Cancer study
+author: "Deniz Pekin, Felipe Lopez Velez, Gustavo Mauricio Chinchayan Bernal"
+date: "11/14/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+This document accompanies our Survival Analysis class assignment for DSTI/S21 as *Supplementary Materials and Methods*. In our assignment we perform a Survival analysis on lung cancer patients according to treatment type. We use the US Veterans' Administration dataset provided by R. Please refer to our assignment document for more information on the data.  
+
+## Analyzing Veterans lung cancer dataset following the steps below:
+1. Load data and packages
+2. Exploratory Data Analysis
+3. Intuition about the survival theories
+4. Kaplan-Meier Analytics
+5. Cox proportional hazard models
+6. Applying machine learning models
+7. Investigating the time-dependence of statistically significant variables
+
+### Loading the data and necessary packages
+
+```{r}
+# Libraries
+library(survival) 
+library(survminer) 
+library(ranger) 
+library(ggplot2) 
+library(dplyr) 
+library(ggfortify)
+library(GGally)
+```
+```{r}
+#The dataset
+data(veteran)
+str(veteran)
+```
+### Exploratory data analysis
+
+The data comes from a randomized experiment between two treatment groups for lung cancer, it contains 137 observations of the variables below:
+- trt: 1 = standard, 2 = test
+- celltype: factor describing the type of cell: 1=squamous, 2=smallcell, 3=adeno, 4=large
+- time: survival time (from start of study to death), in days
+- status: censoring status, 0 = patient death was not observed (survival time was censored), 1 = patient death was observed
+- karno: Karnofsky performance score (quantifies cancer patients’ general well-being and activities of daily life, 0 = Dead to 100 = Normal)
+- diagtime: time from diagnosis to randomization, in months
+- age: age of the patient in years
+- prior: 0 = no prior therapy, 10 = prior therapy
+
+We choose to transform some of the variables into factors to facilitate analysis: we transform the treatment type (trt) into "standard or test" instead of "0 & 1" and the prior treatment status into "yes or no". We also split the patients into 2 age groups: those who are younger than 65 were labeled as "young" and those who were older than 65 years of age were labeled as "old". Finally we have also divided the Karnofsky performance score into 4 categories: the scores 0, 25, 50, 75, 100 were labeled as "very bad","bad","good", "very good" respectively.  
+
+```{r}
+veteran_mutate <- mutate(veteran,
+  trt = factor(trt, labels = c("standard", "test")), #factorizing treatment
+  prior = factor(prior, labels = c("no", "yes")), #factorizing prior treatment status
+  age.g = factor(age < 65 ,levels = c(FALSE, TRUE), labels = c("old", "young")), #age groups
+  karno.g = cut(karno, breaks=c(0, 25, 50, 75, 100), labels = c("very bad","bad","good", "very good")) #karno groups
+  )
+```
+
+## Summary statistics
+
+```{r}
+summary(veteran_mutate)
+```
+
+The patients are separated evenly between the treatment and the control group. Patients’ ages range from 34 to 81 years old. We have 9 censored observations (6.5%) and we see that 93.4% patients die before the end of the study (see histogram below). 40 patients have received some kind of treatment prior to the study (29%). The age of patients ranges from 34 to 81 years old. We have 93 patients under 65 years of age and 44 patients over 65 years old. 
+
+```{r}
+hist(veteran_mutate$time, freq = FALSE, col = 'lavender', xlab='time', main='Histogram of patients')
+```
+
+```{r}
+ggplot(data = veteran_mutate, aes(x = time, fill = trt)) + 
+  geom_histogram() + 
+  facet_grid(trt ~.) + 
+  ggtitle("Distribution of time-to-event by type of treatment")
+```
+
+```{r}
+ggplot(data = veteran_mutate, aes(x = time, fill = celltype)) + 
+  geom_histogram() + 
+  ggtitle("Time of survival per cell type")
+```
+
+```{r}
+ggplot(data = veteran_mutate, aes(x = time, fill = karno)) + 
+  geom_histogram() + 
+  facet_grid(karno ~.) + 
+  ggtitle("Distribution of time-to-event by Karnofsky score")
+```
+
+(The Karnofsky performance score seems high especially at the beginning of the study, hinting at a dependence in time)
+
+# Survival analysis
+
+## Kaplan-Meier analyics
+
+Kaplan-Meier statistic measures the probability that a patient will survive past a specific point in time.
+At t = 0, the statistic is 1 (or 100%).
+When t increases infinitely, the statistic becomes 0.
+
+The plot of the KM estimator is a series of decreasing horizontal steps, approaching the true survival function.
+
+The survival probability of surviving after time = t is noted S(t). It is the product of all the prior survival probabilities up to time = t.
+
+$$
+S(t=n) = S(t=1) * S(t=2) … *  S(t=n-1)
+$$
+The basic formula is:
+
+$$
+\hat{S}(t) = \prod_{i:t \le t} (1- \frac{d_i}{n_i} )
+$$
+
+Where t(i) is a time when at least an event happened, d(i) is the number of events (death or recurring disease for instance), that happened at time t(i), n(i) is the number of of individuals that survive (did not have an event or where not censored).
+
+This is based on conditional probabilities, each new proportion conditional on the previous proportions.
+
+## Kaplan Meier for treatment status
+
+```{r}
+# we use the treatment class (standard or test):
+fit1 <- survfit(Surv(time, status) ~ trt, data=veteran_mutate)
+summary(fit1)$table
+```
+
+```{r}
+# we can also use autoplot for visualization (nstead of ggplot)
+ggsurvplot(
+  fit1,                     #survival model we want to plot 
+  pval = TRUE,              #display p-value of log-rank test
+  conf.int = TRUE,          #plot a confidence interval for each curve
+  xlab = "Study duration (days)",
+  break.time.by = 150,      # break X axis in time intervals by 150.
+  ggtheme = theme_minimal(),  # customize theme with a grid for better readability 
+  risk.table = "abs_pct",   # absolute number and percentage at risk
+  risk.table.y.text.col = TRUE, # color risk table text annotations
+  risk.table.y.text = TRUE, # show names in text annotations in legend of risk table.
+                            # 
+  ncensor.plot = TRUE,      # plot the number of censored subjects at time t
+  surv.median.line = "hv"   # add the median survival pointer
+)
+```
+
+Interpretation:
+- The x-axis represents the survival time in days.
+- The y-axis shows the probability of survival time, related to the number of days on the x-axis.
+- Each event (death in this case) is shown by a vertical drop of the curve.
+- Vertical ticks (although hardly noticeable on the plot) show a censored patient.
+- The curve always start at 1 (no events occur or in this case all patients are alive), then decreases and if the study would last infinitely, the curve would tend towards 0 (no subjects left due to event or censoring).
+- The p-value is 0.93, which is extremely high, we fail to reject the null hypothesis that both curves are different, in plain language, there is no statistical evidence that both curves are different OR, the treatment type doesn't impact the survival time.
+- Like stated earlier and visible here, the median survival time (the point where survival probability is 0.5) for standard treatment is 103 days, against only 52.5 days for the test treatment. However, the log-rank test shows a very high p-value, so even though the differences in medians seems large, there is no strong statistical evidence (actually very weak evidence in this case) that both curves are different.
+
+### log transformation:
+
+```{r}
+ggsurvplot(fit1,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "log")
+```
+
+### Cumulative events 
+
+The number of events that would be expected for each individual by time t if the event were a repeatable process.
+
+```{r}
+ggsurvplot(fit1,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "event")
+```
+
+```{r}
+ggsurvplot(fit1,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "cumhaz")
+```
+
+### Log-Rank Test
+This test is performed on the curves of the Kaplan-Meier method.
+For two (or more) different survival curves, it tests the null hypothesis that both curves are equal. If the p-value is below the significance level (generally alpha = 0.05), then we have convincing statistical evidence that at least two curves differ.
+
+## Kaplan Meier for Karnofsky performance and cell type
+
+
+```{r}
+# survfit for karno:
+fit2 <- survfit(Surv(time, status) ~ karno, data=veteran_mutate)
+summary(fit2)$table
+```
+
+```{r}
+# KM plot for karno (commenting out the risk table ggplot messes up the display when there are too many panels.)
+ggsurvplot(
+  fit2,                     #survival model we want to plot 
+  pval = TRUE,              #display p-value of log-rank test
+  conf.int = TRUE,          #plot a confidence interval for each curve
+  xlab = "Study duration (days)",
+  break.time.by = 150,      # break X axis in time intervals by 150.
+  ggtheme = theme_minimal(),  # customize theme with a grid for better readability 
+  #risk.table = "abs_pct",   # absolute number and percentage at risk
+  #risk.table.y.text.col = TRUE, # color risk table text annotations 
+  #risk.table.y.text = FALSE,  
+                            # 
+  #ncensor.plot = FALSE,      # removing this as well to save space on the plot
+  #surv.median.line = "hv"   # add the median survival pointer
+)
+```
+
+Interpretation:
+- The p-value is highly significant, which allows us to reject the null hypothesis (according to which the curves are identical).
+
+## log transformation:
+
+```{r}
+ggsurvplot(fit2,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "log")
+```
+
+```{r}
+ggsurvplot(fit2,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "event")
+```
+
+```{r}
+ggsurvplot(fit2,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "cumhaz")
+```
+
+```{r}
+# survfit for celltype:
+fit3 <- survfit(Surv(time, status) ~ celltype, data=veteran_mutate)
+summary(fit3)$table
+```
+
+```{r}
+# KM plot for celltype (commenting out the risk table ggplot messes up the display when there are too many panels.)
+ggsurvplot(
+  fit3,                     #survival model we want to plot 
+  pval = TRUE,              #display p-value of log-rank test
+  conf.int = TRUE,          #plot a confidence interval for each curve
+  xlab = "Study duration (days)",
+  break.time.by = 150,      # break X axis in time intervals by 150.
+  ggtheme = theme_minimal(),  # customize theme with a grid for better readability 
+  #risk.table = "abs_pct",   # absolute number and percentage at risk
+  #risk.table.y.text.col = TRUE, # color risk table text annotations 
+  #risk.table.y.text = FALSE,  
+                            # 
+  #ncensor.plot = FALSE,      # removing this as well to save space on the plot
+  #surv.median.line = "hv"   # add the median survival pointer
+)
+```
+
+Interpretation:
+- The p-value is highly significant, which allows us to reject the null hypothesis (according to which the curves are identical).
+
+## log transformation:
+
+```{r}
+ggsurvplot(fit3,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "log")
+```
+
+```{r}
+ggsurvplot(fit3,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "event")
+```
+
+```{r}
+ggsurvplot(fit3,
+          conf.int = TRUE,
+          ggtheme = theme_bw(), 
+          fun = "cumhaz")
+```
+
+The squamous cell carcinomas and the adenocarcinomas seem to have the wost pronostics with an emphasis on the adenocarcinoma. 
+
+## Cox proportional hazard models
+Main purpose: describing the simultaneous effect of several variables on the rate of a particular event happening at a specific point in time.
+
+The Cox model is defined with the hazard function, h(t): it describes the probability of a hazard of a subject to survive to time = t. The function returns a proportion, from 0 to 1.
+
+It measures the instantaneous risk of death. It has a memory-less property, the likelihood of something happening at time = t has no relation to what happened in the past. The function at year y applies to all subjects alive that year, without taking into account who died in previous years.
+
+The exponential survival distribution models the time until the event (component failure, death …).
+
+t = survival time
+h(t) = hazard function taking as arguments n covariates noted x1 to xn
+b1 … bn = coefficients or weights of each covariate
+h0 = is the baseline hazard, i.e. value of the hazard when all x’s are equal to zero.
+
+Hazard ratios (log(b)) are noted HR:
+- if HR = 1: no effect
+- if HR < 1: reduction in hazard, we call the associated covariate a good prognostic factor
+- if HR > 1: increase in hazard, we call the associated covariate a bad prognostic factor
+
+## The univariate Cox model
+
+```{r}
+#Fit univariate cox model
+fit_cox_uni <- coxph(Surv(time, status) ~ trt, data = veteran_mutate)
+summary(fit_cox_uni)
+```
+Interpreting the summary output:
+
+The “z” column gives the Wald statistic value (ratio of each regression coefficient to its standard error (z = coef/se(coef)). The wald statistic evaluates, whether the beta coefficient of a given variable is statistically significantly different from 0. With z = 0.098 and p = 0.922, type of treatment doesn’t have any statistically significant coefficients.
+It the regression coefficients (coef) has a positive sign, the hazard (risk of death) is higher, i.e. the prognosis is worse, for subjects with higher values of that variable. The output gives the hazard ratio (HR) for the second group relative to the first group, that is, test treatment versus standard. The beta coefficient for trt = 0.01774 indicates that test patients have higher risk of death (higher survival rates) than standard patients. But the p-value was high and the variable itself is not statistically significant.
+
+Hazard ratios , that is the exponentiated coefficients noted (exp(coef) = exp(0.01774) = 1.02), give the effect size of the covariates. For example, having test treatment increases the hazard by a factor of 1.02.
+
+Upper and lower 95% confidence intervals for the hazard ratio (exp(coef)).
+
+The global statistical significance of the model gives p-values for three tests: likelihood-ratio test, Wald test, and score logrank. These three methods test the null hypothesis that all beta values are zero and are asymptotically equivalent. For large n, they return similar results. For small n, we use the likelihood ratio test.
+
+## The multivariate Cox model
+
+```{r}
+# Fit multivariate model
+fit_cox_multi <- coxph(Surv(time, status) ~ ., data = veteran_mutate)
+summary(fit_cox_multi)
+```
+Interpretation:
+- the 3 p-values of the global statistical significance are similar and show that the model is statistically significant (p-value < 0.05).
+- cell type and karno seem to be the most significant variables
+
+# Random Forest
+
+We build a random Forest the model using the same variables as in the Cox model above. The following code and plots twenty random curves, along with a curve that represents the global average for all of the patients. 
+
+```{r}
+# ranger model
+r_fit <- ranger(Surv(time, status) ~ trt + celltype + 
+                     karno + diagtime + age + prior,
+                     data = veteran_mutate,
+                     mtry = 4,
+                     importance = "permutation",
+                     splitrule = "extratrees",
+                     verbose = TRUE)
+
+# Average the survival models
+death_times <- r_fit$unique.death.times 
+surv_prob <- data.frame(r_fit$survival)
+avg_prob <- sapply(surv_prob,mean)
+
+# Plot the survival models for each patient
+plot(r_fit$unique.death.times,r_fit$survival[1,], 
+     type = "l", 
+     ylim = c(0,1),
+     col = "red",
+     xlab = "Days",
+     ylab = "survival",
+     main = "Patient Survival Curves")
+
+#
+cols <- colors()
+for (n in sample(c(2:dim(veteran)[1]), 20)){
+  lines(r_fit$unique.death.times, r_fit$survival[n,], type = "l", col = cols[n])
+}
+lines(death_times, avg_prob, lwd = 2)
+legend(500, 0.7, legend = c('Average = black'))
+```
+
+We use the Random Forest model' fit to rank the variables according to their impact on survival:
+
+```{r}
+#ranking variable importance
+vi <- data.frame(sort(round(r_fit$variable.importance, 4), decreasing = TRUE))
+names(vi) <- "importance"
+head(vi)
+```
+
+According to this model the Karnofsky score and the cell type have the most impact on survival. 
+
+
+## Linear models
+```{r}
+fit <- coxph(Surv(time, status) ~ ., data = veteran_mutate)
+```
+
+```{r}
+fit.aic <- step(fit)
+summary(fit.aic)
+```
+
+```{r}
+b.aic <- coef(fit.aic)
+```
+
+```{r}
+fit.manual <- coxph(Surv(time, status)~ celltype + karno, data = veteran)
+b.manual <- coef(fit.manual)
+```
+
+```{r}
+library(glmnet)
+veteran_mutate$y <-with(veteran_mutate, Surv(time, status))
+veteran_no_time <- select(veteran_mutate, -time,-status)
+X <- model.matrix(y ~ ., data = veteran_no_time)[, -1]
+head(X)
+y <- veteran_mutate$y 
+fit.net <- cv.glmnet(X, y, family="cox")
+b.enet.all <- coef(fit.net, s = "lambda.min")
+b.enet <- b.enet.all[b.enet.all != 0]
+names(b.enet) <- colnames(X)[as.logical(b.enet.all != 0)]
+```
+
+
+```{r}
+fit.ccp <- plyr::adply(X, 2, function(x) broom::tidy(coxph(y ~ x)))
+print(fit.ccp)
+str(fit.ccp)
+b.CCP <- with(fit.ccp, structure(estimate, names = as.character(X1)))
+```
+```{r}
+
+```
+
+
+```{r}
+models_coefficients <- tibble(
+  method = c("manual", "aic", "enet", "ccp"),
+  coefficients = list(b.manual, b.aic, b.enet, b.CCP)
+)
+models_coefficients
+```
+
+```{r}
+veteran_prediction <- select(veteran,-status)
+```
+
+
+```{r}
+library (pROC)
+```
+
+```{r}
+veteran_prediction$predictiona_aic <- predict(fit.aic, newdata =veteran_prediction, type="lp" )
+veteran_prediction$predictiona_manual <- predict(fit.manual, newdata =veteran_prediction, type="lp" )
+veteran_prediction$predictiona_net <- predict(fit.net, newx = X, s = "lambda.min")
+```
+
+```{r}
+roc(veteran$status,veteran_prediction$predictiona_aic , 
+    smoothed = TRUE,
+    ci = TRUE, ci.alpha = 0.9, stratified = FALSE,
+    plot = TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid = TRUE,
+    print.auc=TRUE, show.thres=TRUE)
+
+roc(veteran$status,veteran_prediction$predictiona_manual , 
+    smoothed = TRUE,
+    ci = TRUE, ci.alpha = 0.9, stratified = FALSE,
+    plot = TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid = TRUE,
+    print.auc=TRUE, show.thres=TRUE)
+
+roc(veteran$status,veteran_prediction$predictiona_net , 
+    smoothed = TRUE,
+    ci = TRUE, ci.alpha = 0.9, stratified = FALSE,
+    plot = TRUE, auc.polygon=TRUE, max.auc.polygon=TRUE, grid = TRUE,
+    print.auc=TRUE, show.thres=TRUE)
+```
+
+
+## Investigating time dependence
+
+Our analysis shows that the Karnofsky score has a very significant impact on survival, although the models we use work on certain assumptions and one of these assumptions is that th variables don't change over time. We suspect that for the Karnofsky score, this is not the case. 
+We ill use the cox.zph() on the non-mutated dataset to assess the time dependence: 
+
+```{r}
+vfit <- coxph(Surv(time, status) ~ trt + prior + karno, veteran)
+vfit
+```
+
+```{r}
+coxph(formula = Surv(time, status) ~ trt + prior + karno, data = veteran)
+```
+
+```{r}
+quantile(veteran$karno)
+```
+
+```{r}
+zp <- cox.zph(vfit, transform= function(time) log(time +20))
+zp
+```
+
+```{r}
+plot(zp[3]) # a plot for the 3rd variable in the fit
+abline(0,0, col=2)
+abline(h= vfit$coef[3], col=3, lwd=2, lty=2)
+```
+
+Karnofsky score is not constant over time as shown by both the test and the plot. Early on it has a large negative effect: the risk of someone at the first quartile is approximately exp(35*.03377) = 3.2 fold times that of someone at the third quartile, but by 200 days this has waned and is not much different from zero. 
+The proportional hazards model estimates an average hazard over time, the value of which is shown by the dashed horizontal line. 
+
+## Dealing with time dependence
+
+```{r}
+#splitting the dataset into 3 epocs and saving this into a new dataset called vet2
+vet2 <- survSplit(Surv(time, status) ~ ., data= veteran, cut=c(90, 180),
+episode= "tgroup", id="id")
+vet2[1:7, c("id", "tstart", "time", "status", "tgroup", "age", "karno")]
+```
+
+
+The first subject died at 72 days, his data is unchanged. The second and third subjects contribute time to each of the three intervals.
+
+```{r}
+# repeating the coxph on this new dataset (vet2)
+vfit2 <- coxph(Surv(tstart, time, status) ~ trt + prior +
+karno:strata(tgroup), data=vet2)
+vfit2
+```
+
+```{r}
+#using cox.zph on the new fit
+cox.zph(vfit2)
+```
+
+A fit to the revised data shows that the effect of baseline Karnofsky score is essentially limited to the first two months. The cox.zph function shows no further time dependent effect of Karnofsky score. This last is of course no surprise, since we used the original graph to pick the cut points.
+A “test” that the coefficients for the three intervals are different will be biased by this sequential process and should be viewed with caution.
+Survival curves post fit require a little more care. The default curve uses the mean covariate values, which is always problematic and completely useless in this case. Look at the set of saved means for the model:
+
+```{r}
+vfit2$means
+```
+
+We use the aareg() function show how the effects of the covariates change over time. Notice the steep slope and then abrupt change in slope of karno:
+
+```{r}
+aa_fit <-aareg(Surv(time, status) ~ trt + celltype +
+                 karno + diagtime + age + prior , 
+                 data = veteran)
+aa_fit
+```
+
+```{r}
+autoplot(aa_fit)
+```
+
+```{r}
+aa_fit2 <-aareg(Surv(time, status) ~ trt + celltype +
+                 karno + diagtime + age + prior , 
+                 data = veteran)
+aa_fit2
+```
+
+Finally, we plot a visual comparison for survival in order to compare the Kaplan Meier model, Cox model and the random forest model. 
+
+```{r}
+#visual comparison of survival models (KM, Cox, RF)
+
+km_fit <- survfit(Surv(time, status) ~ 1, data=veteran)
+cox <- coxph(Surv(time, status) ~ trt + celltype + karno + diagtime + age + prior , data = veteran)
+cox_fit <- survfit(cox)
+
+# Set up for ggplot
+kmi <- rep("KM",length(km_fit$time))
+km_df <- data.frame(km_fit$time,km_fit$surv,kmi)
+names(km_df) <- c("Time","Surv","Model")
+
+coxi <- rep("Cox",length(cox_fit$time))
+cox_df <- data.frame(cox_fit$time,cox_fit$surv,coxi)
+names(cox_df) <- c("Time","Surv","Model")
+
+rfi <- rep("RF",length(r_fit$unique.death.times))
+rf_df <- data.frame(r_fit$unique.death.times,avg_prob,rfi)
+names(rf_df) <- c("Time","Surv","Model")
+
+plot_df <- rbind(km_df,cox_df,rf_df)
+
+p <- ggplot(plot_df, aes(x = Time, y = Surv, color = Model))
+p + geom_line()
+```
+
+###
