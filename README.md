@@ -1,5 +1,5 @@
 # Survival-Analysis-Statistics
-Course taught by Prof. Fabio Di Narzo for S21 Cohort
+Course taught by Prof. Antonio Fabio Di Narzo for S21 Cohort
 
 Course summary:
 Analysis of survival data using parametric, nonparametric and semiparametric methods.
